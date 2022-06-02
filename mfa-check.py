@@ -1,4 +1,4 @@
-from datetime import date
+#from datetime import date
 
 import boto3
 import csv
