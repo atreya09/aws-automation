@@ -1,11 +1,12 @@
-
 import time
+from pprint import pprint
+
 start_time = time.time()
 
 import boto3
 import csv
 
-service_accounts = ['acoe_', 'acoe', 'odp_', 'ite', 'ite_', 'flightdeck', 'odp', 'ec2import']
+service_accounts = ('acoe_', 'acoe', 'odp_', 'ite', 'ite_', 'flightdeck', 'odp', 'ec2import')
 
 
 # calling all iam users
@@ -16,24 +17,51 @@ def removeServiceAcc(curr_user):
     return 0
 
 
-iam_cl = boto3.client("iam")
-users = iam_cl.list_users()
+iam = boto3.resource('iam')
+#print()
 
-all_usernames = []
+# iam_cl = boto3.client("iam") # use Meta or try to use iam.user.name check boto3 fist video
+# pagination  get_paginator().paginate --> will return all users else use resource, by default iam returns 100 users only in one go
+"""
+for user in iam.users.all():
+print(user.name)
+"""
+users = iam.meta.client.get_paginator("list_users")
+page = users.paginate()
+#iam.LoginProfile("Harry_UI")
+
+#all_usernames = []
 
 
 def getActualUsers():
-    for user in users["Users"]:
-        myUser = user["UserName"]
-        if removeServiceAcc(myUser) != 1:
-            all_usernames.append(myUser)
-    return all_usernames
+    all_users = []
+    for user in page:
+        for username in user["Users"]:
+            myUser = username["UserName"]
+            if removeServiceAcc(myUser) != 1:
+                all_users.append(myUser)
+    return all_users
 
 
-getActualUsers()
-iam = boto3.resource('iam')
 
+target_users = tuple(getActualUsers())
+def getNoMFA():
 
+    false_mfa_users = []
+    # extracting the users for whom no mfa  exists
+    for myUser in target_users:
+
+        usersMfa = iam.meta.client.get_paginator('list_mfa_devices')
+        #usersMfa = iam.meta.client.list_mfa_devices(UserName = myUser)
+        mfa_page = usersMfa.paginate(UserName=myUser)
+        for sample in mfa_page:
+            if not sample["MFADevices"]:
+                false_mfa_users.append(myUser)
+    return false_mfa_users
+
+users_to_check = tuple(getNoMFA())
+
+# dir(iam) -> gives list of all attributes for iam object
 def pwdNoLastUsedCheck(x):
     if iam.User(x).password_last_used:
 
@@ -53,40 +81,25 @@ def isPasswordEnabled(x):
 
 
 # passwordEnabled = true and password last used = no
-print(all_usernames)
-print(len(all_usernames))
 
 
 def noInfoUsersRemoved():
-    bad_usernames = all_usernames
-    for iter_user in bad_usernames:
+    no_info_users = list(users_to_check)
+    for iter_user in users_to_check:
         # iter_user = i["UserName"]
 
         if pwdNoLastUsedCheck(iter_user) == 0:
             # removes password last used having some date ie give NA and no information
 
             if isPasswordEnabled(iter_user) == 1:
-
-                all_usernames.remove(iter_user)  # return the user with password enabled = true because with NA it
+                no_info_users.remove(iter_user)  # return the user with password enabled = true because with NA it
                 # will be false
-    return all_usernames
-
-
-def getNoMFA():
-    target_users = noInfoUsersRemoved()
-
-    # extracting the users for whom no mfa  exists
-    for myUser in target_users:
-
-        usersMfa = iam_cl.list_mfa_devices(UserName=myUser)
-        if usersMfa["MFADevices"]:
-            all_usernames.remove(myUser)
-    return all_usernames
+    return no_info_users
 
 
 
-username = getNoMFA()
-print(username)
+username = noInfoUsersRemoved()
+
 """
 user_to_remove = []
 for user in username:
@@ -122,4 +135,4 @@ with open('noUsers.csv', mode='w+', newline="") as file:
 
 
 """
-print("--- %s seconds for %d users---" % (time.time() - start_time, len(all_usernames)))
+print("--- %s seconds for %d users---" % (time.time() - start_time, len(target_users)))
