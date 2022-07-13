@@ -1,0 +1,141 @@
+import time
+import boto3
+import csv
+from botocore.exceptions import ClientError
+import datetime
+now = datetime.datetime.now()
+start_time = time.time()
+
+service_accounts = ('acoe_', 'acoe', 'odp_', 'ite', 'ite_', 'flightdeck', 'odp', 'ec2import', 'ops', 'svc_')
+
+
+# calling all iam users
+def removeServiceAcc(curr_user):
+    for serv in service_accounts:
+        if curr_user.lower().startswith(serv.lower()):
+            return 1
+    return 0
+
+
+iam = boto3.resource('iam')
+# print()
+
+# iam_cl = boto3.client("iam") # use Meta or try to use iam.user.name check boto3 fist video
+# pagination  get_paginator().paginate --> will return all users else use resource, by default iam returns 100 users only in one go
+"""
+for user in iam.users.all():
+print(user.name)
+"""
+users = iam.meta.client.get_paginator("list_users")
+page = users.paginate()
+
+
+# iam.LoginProfile("Harry_UI")
+
+# all_usernames = []
+
+
+def getActualUsers():
+    all_users = []
+    for user in page:
+        for username in user["Users"]:
+            myUser = username["UserName"]
+            if removeServiceAcc(myUser) != 1:
+                all_users.append(myUser)
+    return all_users
+
+
+target_users = tuple(getActualUsers())
+
+
+def getNoMFA():
+    false_mfa_users = []
+    # extracting the users for whom no mfa  exists
+    for myUser in target_users:
+
+        usersMfa = iam.meta.client.get_paginator('list_mfa_devices')
+        # usersMfa = iam.meta.client.list_mfa_devices(UserName = myUser)
+        mfa_page = usersMfa.paginate(UserName=myUser)
+        for sample in mfa_page:
+            if not sample["MFADevices"]:
+                false_mfa_users.append(myUser)
+    return false_mfa_users
+
+
+users_to_check = tuple(getNoMFA())
+
+
+# dir(iam) -> gives list of all attributes for iam object
+def pwdNoLastUsedCheck(x):
+    if iam.User(x).password_last_used:
+
+        return 1
+    else:
+        return 0
+
+
+def isPasswordEnabled(x):
+    try:
+        iam.LoginProfile(x)
+        login_profile = iam.LoginProfile(x)
+        if login_profile.create_date:
+            return 1
+    except:
+        return 0
+
+
+# passwordEnabled = true and password last used = no
+
+
+def noInfoUsersRemoved():
+    no_info_users = list(users_to_check)
+    for iter_user in users_to_check:
+        # iter_user = i["UserName"]
+
+        if pwdNoLastUsedCheck(iter_user) == 0:
+            # removes password last used having some date ie give NA and no information
+
+            if isPasswordEnabled(iter_user) == 1:
+                no_info_users.remove(iter_user)  # return the user with password enabled = true because with NA it
+                # will be false
+    return no_info_users
+
+
+username = noInfoUsersRemoved()
+
+sns = boto3.resource('sns')
+topic = sns.Topic('arn:aws:sns:ap-southeast-2:156301979809:MFA-Access-Check_S6-First-Reminder')
+
+try:
+    response = topic.publish(
+
+
+        Message='These usernames are not having mfa enabbled on S6 : Please mail them :' + str(username),
+        Subject='MFA activity check send mail : First check on  ' + now.strftime('%Y-%m-%d'),
+
+        MessageAttributes={
+            'string': {
+                'DataType': 'String',
+                'StringValue': 'auto generated mail to send reminder to these emails',
+            }
+
+        },
+
+    )
+except ClientError as e:
+    if 'AuthorizationError' in str(e):
+        print("Please apply for access for SNS via IAM ")
+    else:
+        print("Please check the error " + str(e))
+
+except TypeError as e:
+    print("Use correct Typecasting" + str(e))
+except SyntaxError as e:
+    print("improper syntax " + str(e))
+else:
+    print("Success" + str(response))
+finally:
+    print("The last point has reached of the code")
+
+
+print("--- %s seconds for %d users---" % (time.time() - start_time, len(target_users)))
